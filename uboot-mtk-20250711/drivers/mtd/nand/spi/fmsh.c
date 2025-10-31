@@ -12,6 +12,13 @@
 #endif
 #include <linux/mtd/spinand.h>
 
+#define FM25S01B_STATUS_ECC_MASK	(7 << 4)
+	#define FM25S01B_STATUS_ECC_NO_BITFLIPS	(0 << 4)
+	#define FM25S01B_STATUS_ECC_1_3_BITFLIPS	(1 << 4)
+	#define FM25S01B_STATUS_ECC_UNCOR_ERROR	(2 << 4)
+	#define FM25S01B_STATUS_ECC_4_6_BITFLIPS	(3 << 4)
+	#define FM25S01B_STATUS_ECC_7_8_BITFLIPS	(5 << 4)
+
 #define SPINAND_MFR_FMSH		0xA1
 
 static SPINAND_OP_VARIANTS(read_cache_variants,
@@ -77,9 +84,38 @@ static int fm25s01_ooblayout_free(struct mtd_info *mtd, int section,
 	return 0;
 }
 
+static int fm25s01b_ooblayout_ecc(struct mtd_info *mtd, int section,
+				  struct mtd_oob_region *region)
+{
+	if (section)
+		return -ERANGE;
+
+	region->offset = 64;
+	region->length = 64;
+
+	return 0;
+}
+
+static int fm25s01b_ooblayout_free(struct mtd_info *mtd, int section,
+				   struct mtd_oob_region *region)
+{
+	if (section > 3)
+		return -ERANGE;
+
+	region->offset = (16 * section) + 4;
+	region->length = 12;
+
+	return 0;
+}
+
 static const struct mtd_ooblayout_ops fm25s01_ooblayout = {
 	.ecc = fm25s01_ooblayout_ecc,
 	.rfree = fm25s01_ooblayout_free,
+};
+
+static const struct mtd_ooblayout_ops fm25s01b_ooblayout = {
+	.ecc = fm25s01b_ooblayout_ecc,
+	.rfree = fm25s01b_ooblayout_free,
 };
 
 /*
@@ -93,18 +129,30 @@ static const struct mtd_ooblayout_ops fm25s01_ooblayout = {
  *	not corrected.
  * others, Reserved.
  */
-static int fm25s01bi3_ecc_ecc_get_status(struct spinand_device *spinand,
+static int fm25s01bi3_ecc_get_status(struct spinand_device *spinand,
 					u8 status)
 {
-	struct nand_device *nand = spinand_to_nand(spinand);
-	u8 eccsr = (status & GENMASK(6, 4)) >> 4;
+	switch (status & FM25S01B_STATUS_ECC_MASK) {
+		case FM25S01B_STATUS_ECC_NO_BITFLIPS:
+			return 0;
 
-	if (eccsr <= 1 || eccsr == 3)
-		return eccsr;
-	else if (eccsr == 5)
-		return nand->eccreq.strength;
-	else
-		return -EBADMSG;
+		case FM25S01B_STATUS_ECC_UNCOR_ERROR:
+			return -EBADMSG;
+
+		case FM25S01B_STATUS_ECC_1_3_BITFLIPS:
+			return 3;
+
+		case FM25S01B_STATUS_ECC_4_6_BITFLIPS:
+			return 6;
+
+		case FM25S01B_STATUS_ECC_7_8_BITFLIPS:
+			return 8;
+
+		default:
+			break;
+		}
+
+	return -EINVAL;
 }
 
 static const struct spinand_info fmsh_spinand_table[] = {
@@ -152,7 +200,8 @@ static const struct spinand_info fmsh_spinand_table[] = {
 					      &write_cache_variants,
 					      &update_cache_variants),
 		     SPINAND_HAS_QE_BIT,
-		     SPINAND_ECCINFO(&fm25s01_ooblayout, fm25s01bi3_ecc_ecc_get_status)),
+		     SPINAND_ECCINFO(&fm25s01b_ooblayout,
+				      fm25s01bi3_ecc_get_status)),
 };
 
 static const struct spinand_manufacturer_ops fmsh_spinand_manuf_ops = {
@@ -160,7 +209,7 @@ static const struct spinand_manufacturer_ops fmsh_spinand_manuf_ops = {
 
 const struct spinand_manufacturer fmsh_spinand_manufacturer = {
 	.id = SPINAND_MFR_FMSH,
-	.name = "FMSH",
+	.name = "FudanMicro",
 	.chips = fmsh_spinand_table,
 	.nchips = ARRAY_SIZE(fmsh_spinand_table),
 	.ops = &fmsh_spinand_manuf_ops,
